@@ -7,21 +7,30 @@
 #include <SPI.h>
 #include <SerialFlash.h>
 
-#define ROTARY_DIAL_PULSE_PIN 1 
+#define ROTARY_DIAL_PULSE_PIN 11 
 #define ROTARY_DIAL_TIMEOUT 3000 //If no numbers are dialed for this period, newline is sent
-#define RECORD_LED_PIN 0
+#define RECORD_LED_PIN 13
+#define HANGUP_PIN 12
+
+Bounce hangupSwitch = Bounce(HANGUP_PIN, 20);
 
 AudioInputI2S            i2s2;           
 AudioAnalyzePeak         peak1;          
 AudioRecordQueue         queue1;         
-AudioPlaySdRaw           playRaw1;       
-AudioOutputI2S           i2s1;           
+AudioPlaySdRaw           playRaw1;
+AudioPlaySdWav           playWav1;
+AudioOutputI2S           i2s1;
+AudioMixer4              mixer;
+
 AudioConnection          patchCord1(i2s2, 0, queue1, 0);
 AudioConnection          patchCord2(i2s2, 0, peak1, 0);
-AudioConnection          patchCord3(playRaw1, 0, i2s1, 0);
-AudioConnection          patchCord4(playRaw1, 0, i2s1, 1);
-AudioControlSGTL5000     sgtl5000_1; 
+AudioConnection          patchCord4(playRaw1, 0, mixer, 0);
+AudioConnection          patchCord5(playWav1, 0, mixer, 1);
+AudioConnection          patchCord6(playWav1, 1, mixer, 2);
+AudioConnection          patchCord7(mixer, 0, i2s1, 0);
+AudioConnection          patchCord8(mixer, 0, i2s1, 1);
 
+AudioControlSGTL5000     sgtl5000_1; 
 
 // Teensy audio break out board (can also use AUDIO_INPUT_LINEIN)
 const int myInput = AUDIO_INPUT_MIC;
@@ -36,12 +45,15 @@ char filename[24];
 File frec;
 
 // Remember which mode we're doing
-int mode = 0;  // 0=stopped, 1=recording, 2=playing
+int mode = 0;  // 0=stand by, 1=recording, 2=playing
+bool picked_up = false;
+unsigned long lastdigit_millis = 0; // used to track rotary timeout for multiple digits
 
 void setup() {
   Serial.begin(9600);
 
   pinMode(RECORD_LED_PIN, OUTPUT);
+  pinMode(HANGUP_PIN, INPUT_PULLUP);
 
   RotaryDial::setup(ROTARY_DIAL_PULSE_PIN);
 
@@ -59,8 +71,8 @@ void setup() {
   // Enable the audio shield, select input, and enable output
   sgtl5000_1.enable();
   sgtl5000_1.inputSelect(myInput);
-  sgtl5000_1.volume(0.75);
-  sgtl5000_1.micGain(10);
+  sgtl5000_1.volume(0.5);
+  sgtl5000_1.micGain(15);
 
 
   // Initialize the SD card
@@ -74,36 +86,82 @@ void setup() {
     }
   }
 
+  // // Initialize state of handset
+  // if (hangupSwitch.read() == 0) {
+  //   picked_up = true;
+  //   playTone();
+  // }
+
+
 }
 
 void loop() {
+  
+  if (hangupSwitch.update()) {
+      if (hangupSwitch.fallingEdge()) {
+        Serial.println("Handset picked up");
+        playTone();
+        picked_up = true;
+        mode = 0;
+      }
+      if(hangupSwitch.risingEdge()) {
+        Serial.println("Handset hung up");
+        stopTone();
+        picked_up = false;
+        if (mode == 1) stopRecording();
+        if (mode == 2) stopPlaying();
+        mode = 0;
+      }
+  }
+
+  // // if hung up, do nothing
+  // if (!picked_up) {
+  //   return;
+  // }
+
   if(RotaryDial::available()) {
     int digit = RotaryDial::read();
-    Serial.print(digit);
+    Serial.println("Detected rotary digit: " + String(digit));
     // Respond to rotary digits
     if (digit == 0) {
-      Serial.println("Dialed 0...Recording!");
+      stopTone();
       if (mode == 2) stopPlaying();
       if (mode == 0) startRecording();
     }
-    if (digit == 9) {
-      Serial.println("Dialed 9...Stopping!");
+    if (digit == 5) {
       if (mode == 1) stopRecording();
       if (mode == 2) stopPlaying();
     }
-    if (digit == 8) {
-      Serial.println("Dialed 8...Playing!");
+    if (digit == 4) {
+      stopTone();
       if (mode == 1) stopRecording();
       if (mode == 0) startPlaying();
     }
+    // if (digit != 4) {
+    //   lastdigit_millis = 0;
+    // } else {
+    //   if(lastdigit_millis > 0 && millis() - lastdigit_millis < ROTARY_DIAL_TIMEOUT) {
+    //     // received two 4s within ROTARY_DIAL_TIMEOUT!
+    //     Serial.println("Dialed 44...Playing!");
+    //     stopTone();
+    //     if (mode == 1) stopRecording();
+    //     if (mode == 0) startPlaying();
+    //     mode = 2;
+    //     lastdigit_millis = 0;
+    //   } else {
+    //     // received one 4
+    //     lastdigit_millis = millis();
+    //   }
+    // }
   }
-  // If we're playing or recording, carry on...
+
   if (mode == 1) {
     continueRecording();
   }
   if (mode == 2) {
     continuePlaying();
   }
+
 }
 
 // ======= audio
@@ -169,6 +227,15 @@ void stopRecording() {
   mode = 0;
 }
 
+void playTone() {
+  Serial.println("Playing tone...");
+  playWav1.play("dial_tone_repeated3X.wav");    
+}
+void stopTone() {
+  delay(50);
+  Serial.println("Stopping tone...");
+  if (playWav1.isPlaying()) playWav1.stop();    
+}
 
 void startPlaying() {
   Serial.println("Starting to play file" + String(filename));
