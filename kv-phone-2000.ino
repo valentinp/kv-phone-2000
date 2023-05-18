@@ -103,6 +103,7 @@ void loop() {
         playTone();
         picked_up = true;
         mode = 0;
+        //delay(100);
       }
       if(hangupSwitch.risingEdge()) {
         Serial.println("Handset hung up");
@@ -111,6 +112,7 @@ void loop() {
         if (mode == 1) stopRecording();
         if (mode == 2) stopPlaying();
         mode = 0;
+        //delay(100);
       }
   }
 
